@@ -74,6 +74,56 @@ class TestTasks:
         assert response.status_code == 201
         assert response.data['task']['title'] == 'Do a thing'
 
+    def test_update_task(self, auth_client, user):
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(
+            project=project,
+            title='Original title',
+            description='Original description',
+            created_by=user,
+        )
+
+        response = auth_client.patch(
+            f'/api/tasks/{task.id}',
+            {'title': 'Updated title', 'status': 'in_progress'},
+            format='json',
+        )
+
+        assert response.status_code == 200
+        assert response.data['task']['title'] == 'Updated title'
+        assert response.data['task']['status'] == 'in_progress'
+        assert response.data['task']['description'] == 'Original description'
+        task.refresh_from_db()
+        assert task.title == 'Updated title'
+        assert task.status == 'in_progress'
+
+    def test_update_task_rejects_invalid_status(self, auth_client, user):
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(project=project, title='A task', created_by=user)
+
+        response = auth_client.patch(
+            f'/api/tasks/{task.id}',
+            {'status': 'blocked'},
+            format='json',
+        )
+
+        assert response.status_code == 400
+        task.refresh_from_db()
+        assert task.status == 'todo'
+
+    def test_update_nonexistent_task_returns_not_found(self, auth_client):
+        import uuid
+
+        response = auth_client.patch(
+            f'/api/tasks/{uuid.uuid4()}',
+            {'title': 'Updated title'},
+            format='json',
+        )
+
+        assert response.status_code == 404
+
     def test_viewers_cannot_create_tasks(self, client, user):
         owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
         project = Project.objects.create(name='P', owner=owner)

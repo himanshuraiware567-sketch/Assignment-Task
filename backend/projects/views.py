@@ -164,9 +164,16 @@ class TaskListCreateView(APIView):
 class TaskDetailView(APIView):
     def patch(self, request, task_id):
         try:
-            task = Task.objects.get(id=task_id)
+            task = Task.objects.select_related('project').get(id=task_id)
         except Task.DoesNotExist:
             return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = _get_membership(request.user, str(task.project_id))
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot update the tasks'}, status=status.HTTP_403_FORBIDDEN)
+
 
         if 'title' in request.data:
             task.title = request.data['title'].strip()
