@@ -142,3 +142,7 @@ Create a `Task ID` single-line text field in the Airtable table; it is the upser
 | Database | PostgreSQL 16 |
 | Backend tests | pytest-django |
 | Container | Docker + docker-compose |
+
+
+## Recording
+https://www.loom.com/share/c478e39e76384c6ba033f7fc7b0db615
