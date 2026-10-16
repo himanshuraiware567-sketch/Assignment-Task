@@ -2,6 +2,7 @@ import pytest
 from rest_framework.test import APIClient
 from users.models import User
 from projects.models import Project, Membership, Task, Comment
+from projects.airtable_mock import MockAirtableError, MockAirtableTable
 
 
 @pytest.fixture
@@ -227,3 +228,93 @@ class TestTaskComments:
         )
 
         assert response.status_code == 400
+
+
+@pytest.mark.django_db
+class TestAirtableExport:
+    def test_admin_and_member_can_export(self, auth_client, user, client, monkeypatch):
+        project = Project.objects.create(name='Export project', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        member = User.objects.create_user(email='member@example.com', name='Member', password='password123')
+        Membership.objects.create(user=member, project=project, role='member')
+        Task.objects.create(project=project, title='Export me', created_by=user)
+        airtable = MockAirtableTable()
+        monkeypatch.setattr('projects.views.create_airtable_table', lambda: airtable)
+
+        admin_response = auth_client.post(f'/api/projects/{project.id}/export')
+        member_login = client.post(
+            '/api/auth/login',
+            {'email': member.email, 'password': 'password123'},
+            format='json',
+        )
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {member_login.data['token']}")
+        member_response = client.post(f'/api/projects/{project.id}/export')
+
+        assert admin_response.status_code == 200
+        assert admin_response.data['created'] == 1
+        assert member_response.status_code == 200
+        assert member_response.data['updated'] == 1
+
+    def test_viewer_cannot_export(self, auth_client, user, monkeypatch):
+        owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        project = Project.objects.create(name='Private project', owner=owner)
+        Membership.objects.create(user=owner, project=project, role='admin')
+        Membership.objects.create(user=user, project=project, role='viewer')
+        Task.objects.create(project=project, title='Do not export', created_by=owner)
+        monkeypatch.setattr(
+            'projects.views.create_airtable_table',
+            lambda: pytest.fail('Airtable client should not be created for a viewer'),
+        )
+
+        response = auth_client.post(f'/api/projects/{project.id}/export')
+
+        assert response.status_code == 403
+
+    def test_repeated_export_upserts_without_creating_duplicates(self, auth_client, user, monkeypatch):
+        project = Project.objects.create(name='Export project', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(project=project, title='Export me', created_by=user)
+        airtable = MockAirtableTable()
+        monkeypatch.setattr('projects.views.create_airtable_table', lambda: airtable)
+
+        first_response = auth_client.post(f'/api/projects/{project.id}/export')
+        second_response = auth_client.post(f'/api/projects/{project.id}/export')
+
+        assert first_response.data['created'] == 1
+        assert second_response.data['updated'] == 1
+        assert len(airtable.records) == 1
+        assert next(iter(airtable.records.values()))['fields']['Task ID'] == str(task.id)
+
+    def test_retries_temporary_airtable_failure(self, auth_client, user, monkeypatch):
+        project = Project.objects.create(name='Export project', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(project=project, title='Retry me', created_by=user)
+        airtable = MockAirtableTable({str(task.id): [MockAirtableError(status_code=503)]})
+        delays = []
+        monkeypatch.setattr('projects.views.create_airtable_table', lambda: airtable)
+        monkeypatch.setattr('projects.airtable_export.time.sleep', delays.append)
+
+        response = auth_client.post(f'/api/projects/{project.id}/export')
+
+        assert response.status_code == 200
+        assert response.data['created'] == 1
+        assert response.data['failed'] == 0
+        assert len(airtable.calls) == 2
+        assert delays == [0.5]
+
+    def test_record_failure_does_not_stop_remaining_exports(self, auth_client, user, monkeypatch):
+        project = Project.objects.create(name='Export project', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        failed_task = Task.objects.create(project=project, title='Invalid record', created_by=user)
+        Task.objects.create(project=project, title='Valid record', created_by=user)
+        airtable = MockAirtableTable({str(failed_task.id): [MockAirtableError('invalid field', status_code=422)]})
+        monkeypatch.setattr('projects.views.create_airtable_table', lambda: airtable)
+
+        response = auth_client.post(f'/api/projects/{project.id}/export')
+
+        assert response.status_code == 200
+        assert response.data['created'] == 1
+        assert response.data['updated'] == 0
+        assert response.data['failed'] == 1
+        assert response.data['failures'][0]['taskId'] == str(failed_task.id)
+        assert len(airtable.calls) == 2

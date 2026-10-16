@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, getToken } from "@/lib/api-client";
+import { apiFetch, getStoredUser, getToken } from "@/lib/api-client";
 import { Header } from "@/components/Header";
 import { StatusColumn } from "@/components/StatusColumn";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -17,6 +17,8 @@ export default function ProjectPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newColumn, setNewColumn] = useState<TaskStatus>("todo");
   const [error, setError] = useState<string | null>(null);
+  const [exportSummary, setExportSummary] = useState<{ created: number; updated: number; failed: number } | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getToken()) navigate("/login", { replace: true });
@@ -40,7 +42,25 @@ export default function ProjectPage() {
     onError: (err) => setError(err instanceof Error ? err.message : "create failed"),
   });
 
+  const exportTasks = useMutation({
+    mutationFn: () =>
+      apiFetch<{ created: number; updated: number; failed: number }>(`/api/projects/${id}/export`, {
+        method: "POST",
+      }),
+    onSuccess: ({ created, updated, failed }) => {
+      setExportError(null);
+      setExportSummary({ created, updated, failed });
+    },
+    onError: (err) => {
+      setExportSummary(null);
+      setExportError(err instanceof Error ? err.message : "export failed");
+    },
+  });
+
   const project = data?.project;
+  const currentUser = getStoredUser();
+  const currentRole = project?.memberships.find((member) => member.user.id === currentUser?.id)?.role;
+  const canExport = currentRole === "admin" || currentRole === "member";
   const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
     todo: [],
     in_progress: [],
@@ -74,7 +94,7 @@ export default function ProjectPage() {
 
         {project && (
           <>
-            <div className="flex items-start justify-between mt-4 mb-8">
+            <div className="flex items-start justify-between mt-4 mb-8 gap-4">
               <div>
                 <h1 className="text-2xl font-semibold">{project.name}</h1>
                 {project.description && (
@@ -86,7 +106,36 @@ export default function ProjectPage() {
                   owner: {project.owner.name} · {project.memberships.length} members
                 </p>
               </div>
+              {canExport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportError(null);
+                    setExportSummary(null);
+                    exportTasks.mutate();
+                  }}
+                  disabled={exportTasks.isPending}
+                  className="shrink-0 bg-accent hover:bg-indigo-500 text-white text-sm font-medium rounded-md px-4 py-2 disabled:opacity-50"
+                >
+                  {exportTasks.isPending ? "exporting…" : "export to Airtable"}
+                </button>
+              )}
             </div>
+
+            {exportSummary && (
+              <p
+                className={`text-sm mb-4 ${exportSummary.failed ? "text-amber-400" : "text-green-400"}`}
+                role="status"
+                aria-live="polite"
+              >
+                Airtable export complete: {exportSummary.created} created, {exportSummary.updated} updated, {exportSummary.failed} failed.
+              </p>
+            )}
+            {exportError && (
+              <p className="text-sm text-red-400 mb-4" role="alert">
+                {exportError}
+              </p>
+            )}
 
             <section className="bg-surface border border-border rounded-lg p-4 mb-6">
               <h2 className="text-sm font-medium mb-3">add a task</h2>

@@ -125,6 +125,8 @@ AIRTABLE_TABLE_NAME=Tasks
 
 The backend uses `pyairtable` for real API calls. `backend/projects/airtable_mock.py` is a test double — use it in unit tests, not in production code.
 
+Create a `Task ID` single-line text field in the Airtable table; it is the upsert key that keeps repeated exports from creating duplicates. The exporter writes `Title`, `Description`, `Status`, `Position`, `Project`, `Assignee`, and `Created By` fields as well. Export responses include `created`, `updated`, and `failed` counts. Failed records are reported individually, and temporary API errors are retried.
+
 ## Tech Stack
 
 | Layer | Technology |
