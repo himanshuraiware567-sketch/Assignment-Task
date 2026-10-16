@@ -1,7 +1,7 @@
 import pytest
 from rest_framework.test import APIClient
 from users.models import User
-from projects.models import Project, Membership, Task
+from projects.models import Project, Membership, Task, Comment
 
 
 @pytest.fixture
@@ -147,3 +147,83 @@ class TestTasks:
 
         response = client.delete(f'/api/tasks/{task.id}')
         assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestTaskComments:
+    def test_member_can_create_and_list_task_comments(self, auth_client, user):
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(project=project, title='A task', created_by=user)
+
+        create_response = auth_client.post(
+            f'/api/tasks/{task.id}/comments',
+            {'content': '  First comment  '},
+            format='json',
+        )
+
+        assert create_response.status_code == 201
+        assert create_response.data['comment']['content'] == 'First comment'
+        assert create_response.data['comment']['author']['id'] == str(user.id)
+
+        list_response = auth_client.get(f'/api/tasks/{task.id}/comments')
+
+        assert list_response.status_code == 200
+        assert len(list_response.data['comments']) == 1
+        assert list_response.data['comments'][0]['content'] == 'First comment'
+
+    def test_viewer_can_list_but_cannot_create_comments(self, client, user):
+        owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        project = Project.objects.create(name='P', owner=owner)
+        Membership.objects.create(user=owner, project=project, role='admin')
+        Membership.objects.create(user=user, project=project, role='viewer')
+        task = Task.objects.create(project=project, title='A task', created_by=owner)
+        Comment.objects.create(task=task, author=owner, content='Existing comment')
+
+        login_response = client.post(
+            '/api/auth/login',
+            {'email': user.email, 'password': 'password123'},
+            format='json',
+        )
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_response.data['token']}")
+
+        list_response = client.get(f'/api/tasks/{task.id}/comments')
+        create_response = client.post(
+            f'/api/tasks/{task.id}/comments',
+            {'content': 'Viewer comment'},
+            format='json',
+        )
+
+        assert list_response.status_code == 200
+        assert list_response.data['comments'][0]['content'] == 'Existing comment'
+        assert create_response.status_code == 403
+
+    def test_non_member_cannot_list_task_comments(self, client, user):
+        owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        project = Project.objects.create(name='P', owner=owner)
+        Membership.objects.create(user=owner, project=project, role='admin')
+        task = Task.objects.create(project=project, title='A task', created_by=owner)
+
+        login_response = client.post(
+            '/api/auth/login',
+            {'email': user.email, 'password': 'password123'},
+            format='json',
+        )
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_response.data['token']}")
+
+        response = client.get(f'/api/tasks/{task.id}/comments')
+
+        assert response.status_code == 403
+
+    def test_comment_creation_rejects_blank_content(self, auth_client, user):
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+        task = Task.objects.create(project=project, title='A task', created_by=user)
+
+        response = auth_client.post(
+            f'/api/tasks/{task.id}/comments',
+            {'content': '   '},
+            format='json',
+        )
+
+        assert response.status_code == 400

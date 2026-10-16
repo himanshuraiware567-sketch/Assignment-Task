@@ -1,6 +1,15 @@
 from rest_framework import serializers
 from users.serializers import UserSerializer
-from .models import Project, Membership, Task
+from .models import Project, Membership, Task, Comment
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'content', 'author', 'createdAt']
 
 
 class TaskSerializer(serializers.ModelSerializer):
